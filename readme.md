@@ -5,4 +5,4 @@ Overview of user interface:
 
 ![](https://github.com/hurdg/amphibian-bioacoustics-user-interface/blob/main/images/UI_annotation1.png) "Features that support navigation through audio recordings."
 
-![]([https://github.com/hurdg/amphibian-bioacoustics-user-interface/blob/main/images/UI_annotation1.png](https://github.com/hurdg/amphibian-bioacoustics-user-interface/blob/main/images/UI_annotation2.png)) "Ability for manual and automated classification. Automated classification is based on the neural networks predictions in relation a user-defined threshold value. An upper and lower threshold value can be specified."
+![](https://github.com/hurdg/amphibian-bioacoustics-user-interface/blob/main/images/UI_annotation2.png)) "Ability for manual and automated classification. Automated classification is based on the neural networks predictions in relation a user-defined threshold value. An upper and lower threshold value can be specified."
