@@ -1,0 +1,9 @@
+streamlit==1.36.0
+streamlit_extras==0.4.7
+pandas==2.2.2
+opensoundscape==0.10.1
+plotly==5.22.0
+numpy==1.26.4
+cx_freeze==7.2.0
+
+#python -V 3.10.4
