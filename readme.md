@@ -1,7 +1,8 @@
-This repository contains most of the files necessary to run an interactive user interface that facilitates the manual and automated classification of amphibian vocalizations within recordings. The neural network model files are not included due to github size limits; please reach out to gavin.hurd@pc.gc.ca for access. 
+This repository contains most of the files necessary to run an **interactive user interface that facilitates the manual and automated classification of amphibian vocalizations.** The neural network model files are not included due to github size limits; please reach out to gavin.hurd@pc.gc.ca for access. 
 Alternatively, custom models can be integrated, provided they are compatible with OpenSoundScape v0.10.0 (PyTorch). 
 <br>
 <br>
+
 ---
 Overview of user interface:
 <br>
