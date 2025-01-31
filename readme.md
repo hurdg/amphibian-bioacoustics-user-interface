@@ -21,4 +21,5 @@ The interface is designed to facilitate easy navigation through audio recordings
 
   In the case of a conflict between manual and automated classifications, the manual classification will take priority.
 <br>
+
 ![](https://github.com/hurdg/amphibian-bioacoustics-user-interface/blob/main/images/UI_annotation2.png)
