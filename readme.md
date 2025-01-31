@@ -1,17 +1,23 @@
-This repository contains most of the files necessary to run an **interactive user interface that facilitates the manual and automated classification of amphibian vocalizations.** The neural network model files are not included due to github size limits; please reach out to gavin.hurd@pc.gc.ca for access. 
-Alternatively, custom models can be integrated, provided they are compatible with OpenSoundScape v0.10.0 (PyTorch). 
-<br>
-<br>
+# Amphibian Bioacoustics User Interface
+
+This repository contains the majority of the files needed to run an **interactive user interface for the manual and automated classification of amphibian vocalizations**. The neural network model files are not included due to GitHub size restrictions. If you need access to these files, please contact [gavin.hurd@pc.gc.ca](mailto:gavin.hurd@pc.gc.ca). Alternatively, you can integrate your own custom models, provided they are compatible with **OpenSoundScape v0.10.0** (PyTorch).
 
 ---
-Overview of user interface:
-<br>
-<br>
-The interface contains features that facilitate navigation through audio recordings. 
-<br>
+
+## Overview of the User Interface
+
+The interface is designed to facilitate easy navigation through audio recordings, providing tools for both **manual** and **automated** classification of amphibian vocalizations.
+
+### Key Features:
+
+- **Audio Navigation**: Browse and play through audio recordings.
 ![](https://github.com/hurdg/amphibian-bioacoustics-user-interface/blob/main/images/UI_annotation1.png) 
 <br>
 <br>
-The interface also supports both manual and automated classification. Automated classification is based on the neural networks predictions in relation a user-defined threshold value. An upper and lower threshold value can be specified. In the case of a conflict between the manual and automated classifications, priority will be given to the former.
+- **Manual Classification**: Users can manually label audio segments.
+
+- **Automated Classification**: The system can automatically classify vocalizations based on neural network predictions, using a user-defined threshold value. You can specify both upper and lower threshold values to control the sensitivity of the classification.
+
+  In the case of a conflict between manual and automated classifications, the manual classification will take priority.
 <br>
 ![](https://github.com/hurdg/amphibian-bioacoustics-user-interface/blob/main/images/UI_annotation2.png)
