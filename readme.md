@@ -6,7 +6,7 @@ This repository contains the majority of the files needed to run an **interactiv
 
 ## Overview of the User Interface
 
-The interface is designed to facilitate easy navigation through audio recordings, providing tools for both **manual** and **automated** classification of amphibian vocalizations.
+The interface is designed to facilitate navigation through audio recordings, providing tools for both **manual** and **automated** classification of amphibian vocalizations.
 
 ### Key Features:
 
