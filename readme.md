@@ -14,6 +14,7 @@ The interface is designed to facilitate easy navigation through audio recordings
 ![](https://github.com/hurdg/amphibian-bioacoustics-user-interface/blob/main/images/UI_annotation1.png) 
 <br>
 <br>
+
 - **Manual Classification**: Users can manually label audio segments.
 
 - **Automated Classification**: The system can automatically classify vocalizations based on neural network predictions, using a user-defined threshold value. You can specify both upper and lower threshold values to control the sensitivity of the classification.
