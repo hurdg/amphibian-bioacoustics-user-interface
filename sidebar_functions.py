@@ -1,7 +1,7 @@
 import streamlit as st
 
 def ai_slider():
-    ai_slider = st.slider(label = "",
+    ai_slider = st.slider(label = "slider",
                         help = """
                         Set the confidence range for the A.I. Classifier\n\nThe 
                         default confidence range is from 60 to 100.\n\n \n\nSamples will be classified as _absent_ by the A.I. if 
@@ -12,13 +12,13 @@ def ai_slider():
                         min_value = 0,
                         max_value = 100,
                         key = 'ai_range',
-                        value =  (60, 100),
-                        label_visibility = 'visible')
+                        value =  (60, 99),
+                        label_visibility = 'collapsed')
 
     return(ai_slider)
 
 def text_input():
-    text_input = st.text_input(label = "",
+    text_input = st.text_input(label = "user_name",
                                placeholder  = "Copy and paste the folder pathway here", 
                                value = "", 
                                key = 'user_input',
@@ -27,7 +27,7 @@ def text_input():
 
 
 def text_input_name():
-    text_input = st.text_input(label = "",
+    text_input = st.text_input(label = "file_path",
                                placeholder  = "Your username", 
                                value = "", 
                                key = 'user_name',

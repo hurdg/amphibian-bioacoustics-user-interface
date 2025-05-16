@@ -1,3 +1,5 @@
 *.ipynb
 *.venv
 *.model
+*.pth
+__pycache__

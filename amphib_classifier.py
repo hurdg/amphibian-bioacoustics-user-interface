@@ -9,7 +9,8 @@ import re
 import json
 
 #CUstom functions
-from utils import get_sidebar_table, get_spectrogram, get_filenames, get_scores, make_wildtrax_df, get_ai_classification, get_file_attr, get_sorted_keys, get_event_index, get_title_markdown, no_update_json, yes_update_json
+
+from utils import get_filenames, get_sidebar_table, get_spectrogram, get_scores, reset_file_classifications, make_occupancy_df, get_ai_classification, get_file_attr, get_sorted_keys, get_event_index, get_title_markdown, no_update_json, yes_update_json
 from sidebar_functions import ai_slider, text_input, toggle_button, text_input_name
 from plotly_grid import plotly_grid
 
@@ -35,13 +36,15 @@ if 'selection' not in st.session_state: st.session_state.selection = [0]
 if 'ai_range' not in st.session_state: st.session_state.ai_range = [60,100]
 if 'no_button' not in st.session_state: st.session_state.no_button = False
 if 'yes_button' not in st.session_state: st.session_state.yes_button = False
+if 'auto_filer' not in st.session_state: st.session_state.auto_filer = False
 
 with st.sidebar:
-    top_left, top_right = st.columns([3,1.2], vertical_alignment = 'bottom')
+    top_left, top_right = st.columns([3, 1.2], vertical_alignment = 'bottom')
     #Toggle button for spp., create objects
     with top_right:
         is_wofr, spp_name, spp_code = toggle_button(spp_iswofr_dict)
         user_name = text_input_name()
+
     #Classifier title on left
     with top_left:
         st.header(f"{spp_name} Classifier", divider = True)
@@ -63,25 +66,23 @@ if user_input != "" and user_name == "":
 
 #######################################################################################
 ######################## Get Base Data ################################################
-#######################################################################################
 
 #Create list of audio filepaths
 audio_filenames = get_filenames(user_input)
 
 #get ai classification scores
-output, output_filepath = get_scores(user_input, audio_filenames)
+get_scores(user_input, audio_filenames)
 
 #Auto classify the values beyond this range
-output = get_ai_classification(output, output_filepath, st.session_state.ai_range) #Does not write over manually classified files
+get_ai_classification(audio_filenames, st.session_state.ai_range, spp_code, user_input, user_name) #Does not write over manually classified files
 
 
 #######################################################################################
 ######################## Audio FILE Config ############################################
-#######################################################################################
 
 #Sidebar df
 with st.sidebar:
-    df, sidebar_df = get_sidebar_table(output, spp_code, key = 'sidebar_df')
+    df, sidebar_df = get_sidebar_table(audio_filenames, spp_code, key = 'sidebar_df', user_input = user_input, selection = st.session_state.selection, user_name = user_name, auto_filer = st.session_state.auto_filer)
 
 #Store the index of the row that has been selected, or, if no selection, default to the first row
 if bool(sidebar_df.selection.rows): #i.e. if a seletion has been made in the sidebar
@@ -106,22 +107,11 @@ with title_col:
 
 #######################################################################################
 ######################## File SAMPLES Config ##########################################
-#######################################################################################
 
-#Update json with yes no selection from PREVIOUS model iteration
-#Necessary to ensure that sorting feature of sample navigator is working with up to date file
-#Will not be invoked if manual sample selections are made
-if st.session_state.no_button:
-    no_update_json(output, output_filepath, filename, spp_code, user_name, st.session_state.yesno_key)
-
-if st.session_state.yes_button:
-    yes_update_json(output, output_filepath, filename, spp_code, user_name, st.session_state.yesno_key)
-
-#Extract dict of all 3 second clipes within selected file ('file_dict')
+#Extract dict of all 3 second clips within selected file ('file_dict')
 #Sort scores of unclassified samples descendingly (i.e. most likely clip is at top;'sorted_keys_unclassified)
 
-sorted_keys_unclassified, file_dict = get_sorted_keys(output, filename, spp_code)
-print(f"sorted keys: {sorted_keys_unclassified}")
+sorted_keys_unclassified, file_dict = get_sorted_keys(filename, spp_code, user_input)
 
 #If there has been a selection in the plotly grid (sample navigator) then update the samp_key and the yesno_key with the selection value
     #Samp_key is used to draw the black bounding box around the selected cell in the sample navigator
@@ -142,32 +132,16 @@ try: #Proceeds if a selection has been made in the sample navigator
 except:
     if sorted_keys_unclassified:
         st.session_state.samp_key = sorted_keys_unclassified[0]
-        print(f"yesno key: {st.session_state.yesno_key}")
-        print(f"samp key: {st.session_state.samp_key}")
     else:
-        st.session_state.samp_key = '0'
+        st.session_state.samp_key = 0
 
 #Create object for simplicity
 samp_key = st.session_state.samp_key
 
-#In the event of a manual classification event, the JSON file will first be updated
-#The correct values to update are identified with the yesno_key
-    #NOTE: The yesno_key may be lagging the samp_key if consecutive auto-updates have been made
-#The transcriber and spp_code fields will be updated in accordance with the manual selection
-
-if st.session_state.no_button:
-    no_update_json(output, output_filepath, filename, spp_code, user_name, st.session_state.yesno_key)
-
-if st.session_state.yes_button:
-    yes_update_json(output, output_filepath, filename, spp_code, user_name, st.session_state.yesno_key)
-
-
-#After the JSON has been updated, the yesno_key can be re-aligned with the samp_key
-st.session_state.yesno_key = samp_key
 
 #######################################################################################
 ######################## Figure Config ################################################
-#######################################################################################
+
 
 #Specify layout - column spacing
 null, middle_left,  null, middle_right = st.columns([0.5,9,0.5, 6], vertical_alignment = 'top')
@@ -192,15 +166,15 @@ with middle_right:
     grid_event = st.plotly_chart(grid, key="plotly_grid", on_select="rerun", selection_mode = 'points', config = {'displayModeBar': False})
 
     #Display selection info below sample navigator
-    null, bot_left,  bot_right = st.columns([1,2,3], vertical_alignment = 'top')
+    null, bot_left,  bot_right = st.columns([0.5,2,3], vertical_alignment = 'top')
     with bot_left: st.text(f"Sample: {samp_key}")
     with bot_right:
-        samp_score = dict(file_dict[spp_code + '_pos'])[samp_key]
+        samp_score = dict(file_dict[spp_code + '_pos'])[int(samp_key)]
         st.text(f"A.I. Confidence: {round(samp_score*100)}")
 
  
 #Create spectorgram
-start_time = file_dict['start_time'][samp_key]
+start_time = file_dict['start_time'][int(samp_key)]
 end_time = start_time + 3
 spectrogram_object = get_spectrogram(filepath, start_time, end_time)
 
@@ -211,16 +185,17 @@ with middle_left:
     st.audio(filepath,start_time=start_time,end_time = end_time, loop=True, autoplay = True)
 
 
-
 #Create buttons for 'yes' and 'no' manual classifications
 #Upon the user clicking the yes or no button, a corresponding boolean session_state object is set to True, which triggers the above pathway that writes to a JSON
     null, col1, mid, col2 = st.columns([1,1.5,3,2], vertical_alignment = 'center')
 
     def noClickFunction():
-        st.session_state.no_button = True
+        no_update_json(filename, spp_code, user_name, st.session_state.yesno_key, user_input)
+        st.session_state.yesno_key = samp_key
 
     def yesClickFunction():
-        st.session_state.yes_button = True
+        yes_update_json(filename, spp_code, user_name, st.session_state.yesno_key, user_input)
+        st.session_state.yesno_key = samp_key
 
     with col1:
         with stylable_container(
@@ -248,18 +223,55 @@ with middle_left:
 
     #Update classified csv with manual selection
 
-
+st.session_state.yesno_key = samp_key
 
 with st.sidebar:
-    with stylable_container(
-    "grey",
-    css_styles="""
-    button {
-        background-color: #b3afa6;
-        color: black;
-    }""",
-    ):
-        wildtrax_button = st.button("Export CSV", key="Export")
-if wildtrax_button:
-    wildtrax_df = make_wildtrax_df(output)
-    wildtrax_df.to_csv(os.path.join(user_input, 'eim_amphibian_tags.csv'), index = False)
+    left, mid, right = st.columns([1,1,1], vertical_alignment = 'bottom')
+    with left:
+        st.session_state.auto_filer = st.toggle(label = 'auto file', 
+                    value = False, 
+                    help = 'Click to enable auto transitions after a file is fully classified',
+                    label_visibility = 'collapsed')
+        with stylable_container(
+        "grey",
+        css_styles="""
+        button {
+            background-color: #b3afa6;
+            color: black;
+        }""",
+        ):
+            wildtrax_button = st.button("Export Wildtrax CSV", key="ExportWildtrax")
+    
+    with mid:
+        with stylable_container(
+        "lightgrey",
+        css_styles="""
+        button {
+            background-color: #b3afa6;
+            color: black;
+        }""",
+        ):
+            occupancy_button = st.button("Export Occupancy CSV", key="ExportOccupancy")
+    if occupancy_button:
+        weto_df, wofr_df = make_occupancy_df(audio_filenames)
+        weto_df.to_csv(os.path.join(user_input, 'weto_occupancy.csv'), index = True, na_rep='NA')
+        wofr_df.to_csv(os.path.join(user_input, 'wofr_occupancy.csv'), index = True, na_rep='NA')
+
+    with right:
+        def reset_button():
+            st.session_state.reset_table = False
+            reset_file_classifications(spp_code, filename, user_input)
+
+        with stylable_container(
+        "lightgrey",
+        css_styles="""
+        button {
+            background-color: #b3afa6;
+            color: black;
+        }""",
+        ):
+            st.session_state.reset_table = st.button("Reset Classifications", 
+                        key="ResetClass", on_click = reset_button)
+
+
+    

@@ -1,11 +1,13 @@
 import plotly.graph_objects as go
 
+
 def plotly_grid(file_dict, spp_code, spp_name, ai_range, samp_key):
+    
     fig = go.Figure()
 
     z_index_unhashable = list(reversed([list(range(i,i+5)) for i in range(0,60,5)]))
     z_index_hashable = [z for z_list in z_index_unhashable for z in z_list]
-    z_vals_hashable = [round(file_dict[spp_code+'_pos'][str(z)],2) for z in z_index_hashable]
+    z_vals_hashable = [round(file_dict[spp_code+'_pos'][z],2) for z in z_index_hashable]
     z_vals_unhashable = [z_vals_hashable[i:i+5] for i in range(0, 60, 5)]
 
 
@@ -35,9 +37,9 @@ def plotly_grid(file_dict, spp_code, spp_name, ai_range, samp_key):
                             colorbar=dict(
                                 tick0=0,
                                 dtick=1,
-                                title=dict( text = f"A.I. Confidence of {spp_name} Presence",
+                                title=dict( text = "A.I. Confidence",
                                             font = dict(size = 12)),
-                                titleside="right",
+                                #titleside="right",
                                 len = 0.65, lenmode = 'fraction',
                                 yanchor="top", y=0.88, x=0.9,
                                 thickness = 0.08, thicknessmode = 'fraction'),
@@ -50,7 +52,7 @@ def plotly_grid(file_dict, spp_code, spp_name, ai_range, samp_key):
     y_grid = [y for ys in [[yss]*5 for yss in reversed(range(0,12))] for y in ys]
 
 
-    below_ai_key = [int(key) for key, value in file_dict[spp_code+'_pos'].items() if value  < ((ai_range[0]-0.01)/100)]
+    below_ai_key = [int(key) for key, value in file_dict[spp_code+'_pos'].items() if value  < ((ai_range[0]-0.000001)/100)]
     x_grid_below_ai = [x_grid[below_key] for below_key in below_ai_key]
     y_grid_below_ai = [y_grid[below_key] for below_key in below_ai_key]
 
@@ -70,7 +72,7 @@ def plotly_grid(file_dict, spp_code, spp_name, ai_range, samp_key):
         legendrank=5
     ))
 
-    above_ai_key = [int(key) for key, value in file_dict[spp_code+'_pos'].items() if value > ((ai_range[1]+0.01)/100)]
+    above_ai_key = [int(key) for key, value in file_dict[spp_code+'_pos'].items() if value > ((ai_range[1]+0.000001)/100)]
     x_grid_above_ai = [x_grid[above_key] for above_key in above_ai_key]
     y_grid_above_ai = [y_grid[above_key] for above_key in above_ai_key]
 
@@ -111,9 +113,9 @@ def plotly_grid(file_dict, spp_code, spp_name, ai_range, samp_key):
     ))
 
 
-    user_transcribed = [key for key, value in file_dict['transcriber_'+spp_code].items() if isinstance(value, str) and (value !='EIM_AI')]
-    user_transcribed_neg = [int(key) for key, value in file_dict[spp_code].items() if (value ==0) and (key in user_transcribed)]
-    user_transcribed_pos = [int(key) for key, value in file_dict[spp_code].items() if (value ==1) and (key in user_transcribed)]    
+    user_transcribed = [key for key, value in file_dict['transcriber_'+spp_code].items() if isinstance(value, str) and (value !='eim_ai')]
+    user_transcribed_neg = [int(key) for key, value in file_dict[spp_code].items() if (str(value) ==str(0)) and (int(key) in user_transcribed)]
+    user_transcribed_pos = [int(key) for key, value in file_dict[spp_code].items() if (str(value) ==str(1)) and (int(key) in user_transcribed)]    
 
     x_grid_user_neg = [x_grid[user_neg_key] for user_neg_key in user_transcribed_neg]
     y_grid_user_neg = [y_grid[user_neg_key] for user_neg_key in user_transcribed_neg]
