@@ -44,12 +44,16 @@ def get_scores(user_input, audio_filenames):
         preprocessor.pipeline.load_audio.params.sample_rate = 16000
 
         #Initiate resnet models
-        weto_model = ConfigureResnet(architecture = 'resnet34', dropout = False,  dropout_rate=0.5)
-        print('using weto_state_dict...')
-        weto_model.load_state_dict(torch.load('weto_state_dict.pth', map_location=torch.device('cpu') ))
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         wofr_model = ConfigureResnet(architecture = 'resnet34', dropout = False,  dropout_rate=0.5)
-        print('using wofr_state_dict...')
-        wofr_model.load_state_dict(torch.load('wofr_state_dict.pth', map_location=torch.device('cpu') ))
+        wofr_model.to(device)
+        print('using wofr_state_dict')
+        wofr_model.load_state_dict(torch.load('wofr_state_dict.pth', map_location=device ))
+
+        weto_model = ConfigureResnet(architecture = 'resnet34', dropout = False,  dropout_rate=0.5)
+        weto_model.to(device)
+        print('using weto_state_dict')
+        weto_model.load_state_dict(torch.load('weto_state_dict.pth', map_location=device ))
 
         #Create object to store audio filepaths
         filepaths = [os.path.join(user_input, filename) for filename in audio_filenames]
@@ -70,6 +74,7 @@ def get_scores(user_input, audio_filenames):
         wofr_model.eval()
         with torch.no_grad():
             for i, (batch, _) in enumerate(tqdm.tqdm(pred_dataloader)):
+                batch = batch.to(device)
 
                 #Weto 
                 weto_output = torch.sigmoid(weto_model(batch))
@@ -173,10 +178,8 @@ class CompareAggregate:
         return (self.priority)
 
 
-def get_ai_classification(audio_filenames, ai_range, spp_code, user_input, user_name):
-    lower = ai_range[0]/100
-    upper = ai_range[1]/100
-
+def get_ai_classification(audio_filenames, ai_range_dict, spp_code, user_input, user_name):
+    
     try:
         print("Opening SQLite connection to automatically classify recordings")
         sqlite_connection = sqlite3.connect(os.path.join(user_input, 'amphib_db.db'))
@@ -186,6 +189,8 @@ def get_ai_classification(audio_filenames, ai_range, spp_code, user_input, user_
         # WHERE CLAUSE TO UPDATE DATA
         for filename_i in audio_filenames:
             for spp_code in ['weto', 'wofr']:
+                lower = ai_range_dict[spp_code][0]/100
+                upper = ai_range_dict[spp_code][1]/100
                 #Record samples that are classified by AI - manual classification has priority
                 #Set samples with scores above upper threshold
                 cursor.execute(f"""
@@ -476,29 +481,6 @@ def yes_update_json(filename, spp_code, user_name, yesno_key, user_input):
         st.session_state.yes_button = False
 
 
-def make_occupancy_df(audio_filenames):
-
-    weto_df_list = []
-    wofr_df_list = []
-    for filename in audio_filenames:
-        df = pd.read_sql(f"SELECT * FROM '{filename}'")
-        filename_re = re.compile(r'^(.*)_(\d{8}_\d{6})')
-        location = filename_re.match(filename).group(1)
-        survey = filename_re.match(filename).group(2)
-        
-        weto_presence = int(any(df['weto']==1))
-        wofr_presence = int(any(df['wofr']==1))
-        
-        weto_df = pd.DataFrame({'location': [location], 'survey':  [survey], 'presence': [weto_presence]}) 
-        wofr_df = pd.DataFrame({'location': [location], 'survey':  [survey], 'presence': [wofr_presence]})
-
-        weto_df_list.append(weto_df)
-        wofr_df_list.append(wofr_df)
-
-    weto_occ_df = pd.concat(weto_df_list).pivot(index='location', columns='survey', values='presence')
-    wofr_occ_df = pd.concat(wofr_df_list).pivot(index='location', columns='survey', values='presence')
-
-    return(weto_occ_df, wofr_occ_df)
 
 
 def get_sorted_keys(filename, spp_code, user_input):
@@ -621,61 +603,156 @@ def get_df(audio_filenames, spp_code):
     df['filename'] = audio_filenames
     return(df)
 
+def make_occupancy_df(audio_filenames, user_input):
+    try:
+        print('Opening SQLite connection to create occupancy dataframe')
+        sqlite_connection = sqlite3.connect(os.path.join(user_input, 'amphib_db.db'))
+        weto_df_list = []
+        wofr_df_list = []
+        for filename in audio_filenames:
+            df = pd.read_sql(f"SELECT * FROM '{filename}'", sqlite_connection)
+            filename_re = re.compile(r'^(.*)_(\d{8}_\d{6})')
+            location = filename_re.match(filename).group(1)
+            survey = filename_re.match(filename).group(2)
+            weto_presence = int(any(df['weto']==1) or any(df['weto']=="1"))
+            wofr_presence = int(any(df['wofr']==1) or any(df['wofr']=="1"))
+            
+            weto_df = pd.DataFrame({'location': [location], 'survey':  [survey], 'presence': [weto_presence]}) 
+            wofr_df = pd.DataFrame({'location': [location], 'survey':  [survey], 'presence': [wofr_presence]})
 
-def make_wildtrax_df(output):
+            weto_df_list.append(weto_df)
+            wofr_df_list.append(wofr_df)
 
-    df_list = []
+        weto_occ_df = pd.concat(weto_df_list).pivot(index='location', columns='survey', values='presence')
+        wofr_occ_df = pd.concat(wofr_df_list).pivot(index='location', columns='survey', values='presence')
+        print("Occupancy dataframes created")
+        sqlite_connection.close()
 
-    for filename in output.keys():
-        df_raw = pd.DataFrame(output[filename])
-        df_weto = df_raw[['transcriber_weto', 'start_time']][(df_raw['weto']==1)].rename(columns = {'start_time': 'startTime'})
-        df_weto['species'] = 'WETO'
-        df_wofr = df_raw[['transcriber_wofr', 'start_time']][(df_raw['wofr']==1)].rename(columns = {'start_time': 'startTime'})
-        df_wofr['species'] = 'WOFR'
-        df = pd.concat([df_weto.rename(columns={'transcriber_weto':'transcriber'}), df_wofr.rename(columns={'transcriber_wofr':'transcriber'})])
-        try:
-            #filename_location_re = re.compile(r'[Aa]-\d+?(?=_)')
-            filename_location_re = re.compile(r'^(.*)_\d{8}_\d{6}')
-            location = filename_location_re.match(filename).group(1)
-        except:
-            try:
-                filepath_location_re = re.compile(r'[Aa]-\d+')
-                location = filepath_location_re.match(filename)
-            except: location = "NA"
-        
-        df['location'] = location
+        return(weto_occ_df, wofr_occ_df)
+    # Handle errors
+    except sqlite3.Error as error:
+        print('Error occurred - ', error)
 
-        try:
+    # Close DB Connection irrespective of success
+    # or failure
+    finally:
+
+        if sqlite_connection:
+            sqlite_connection.close()
+            print('SQLite Connection closed')
+        st.session_state.no_button = False
+
+def make_wildtrax_df(audio_filenames, user_input):
+
+    try:
+        print('Opening SQLite connection to create wildtrax dataframe')
+        sqlite_connection = sqlite3.connect(os.path.join(user_input, 'amphib_db.db'))
+        df_list = []
+        for filename in audio_filenames:
+            df = pd.read_sql(f"SELECT * FROM '{filename}'", sqlite_connection)
+            df_weto = df[['transcriber_weto', 'start_time']][((df['weto']==1) | (df['weto']=="1"))].rename(columns = {'start_time': 'startTime'})
+            df_weto['species'] = 'WETO'
+            df_wofr = df[['transcriber_wofr', 'start_time']][((df['wofr']==1) | (df['wofr']=="1"))].rename(columns = {'start_time': 'startTime'})
+            df_wofr['species'] = 'WOFR'
+            df_wildtrax_single = pd.concat([df_weto.rename(columns={'transcriber_weto':'transcriber'}), df_wofr.rename(columns={'transcriber_wofr':'transcriber'})])
+            location_re = re.compile(r'^(.*)_(\d{8}_\d{6})')
+
+            location = location_re.match(filename).group(1)
+            df_wildtrax_single['location'] = location
+
             datetime_re = re.compile(r'_(\d{8})_(\d{6})')
             datetime_raw = datetime_re.search(filename)
             date = '-'.join([datetime_raw.group(1)[:4], datetime_raw.group(1)[4:6], datetime_raw.group(1)[6:]])
             time = ':'.join([datetime_raw.group(2)[:2], datetime_raw.group(2)[2:4], datetime_raw.group(2)[4:]])
-            datetime_parsed = date +" "+ time        
-        except:
-            datetime_parsed = "NA"
+            datetime_parsed = date +" "+ time    
+
+            df_wildtrax_single['recordingDate'] = datetime_parsed
+            df_wildtrax_single['method'] = 'NONE'
+            df_wildtrax_single['taskLength'] = 180
+            df_wildtrax_single['speciesIndividualNumber'] = 1
+            df_wildtrax_single['vocalization'] = 'call'
+            df_wildtrax_single['abundance'] = None
+            df_wildtrax_single['tagLength'] = 3
+            df_wildtrax_single['minFreq'] = 0
+            df_wildtrax_single['maxFreq'] = 12000
+            df_wildtrax_single['speciesIndividualComment'] = None
+            df_wildtrax_single['internal_tag_id'] = None
+
+
+            df_list.append(df_wildtrax_single)
+
+        wildtrax_df = pd.concat(df_list)
+        wildtrax_df = wildtrax_df[['location','recordingDate','method', 
+                                'taskLength', 'transcriber', 'species', 
+                                'speciesIndividualNumber', 'vocalization', 'abundance', 
+                                'startTime', 'tagLength', 'minFreq', 
+                                'maxFreq', 'speciesIndividualComment', 'internal_tag_id']]
+        sqlite_connection.close()
+        print('SQLite Connection closed')
+        return(wildtrax_df)
+    
+    except sqlite3.Error as error:
+        print('Error occurred - ', error)
+
+    # Close DB Connection irrespective of success
+    # or failure
+    finally:
+
+        if sqlite_connection:
+            sqlite_connection.close()
+            print('SQLite Connection closed')
+        st.session_state.no_button = False            
+
+    # for filename in output.keys():
+    #     df_raw = pd.DataFrame(output[filename])
+    #     df_weto = df_raw[['transcriber_weto', 'start_time']][(df_raw['weto']==1)].rename(columns = {'start_time': 'startTime'})
+    #     df_weto['species'] = 'WETO'
+    #     df_wofr = df_raw[['transcriber_wofr', 'start_time']][(df_raw['wofr']==1)].rename(columns = {'start_time': 'startTime'})
+    #     df_wofr['species'] = 'WOFR'
+    #     df = pd.concat([df_weto.rename(columns={'transcriber_weto':'transcriber'}), df_wofr.rename(columns={'transcriber_wofr':'transcriber'})])
+    #     try:
+    #         #filename_location_re = re.compile(r'[Aa]-\d+?(?=_)')
+    #         filename_location_re = re.compile(r'^(.*)_\d{8}_\d{6}')
+    #         location = filename_location_re.match(filename).group(1)
+    #     except:
+    #         try:
+    #             filepath_location_re = re.compile(r'[Aa]-\d+')
+    #             location = filepath_location_re.match(filename)
+    #         except: location = "NA"
         
-        df['recordingDate'] = datetime_parsed
-        df['method'] = 'NONE'
-        df['taskLength'] = 180
-        df['speciesIndividualNumber'] = 1
-        df['vocalization'] = 'call'
-        df['abundance'] = None
-        df['tagLength'] = 3
-        df['minFreq'] = 0
-        df['maxFreq'] = 12000
-        df['speciesIndividualComment'] = None
-        df['internal_tag_id'] = None
+    #     df['location'] = location
 
-        df_list.append(df)
+    #     try:
+    #         datetime_re = re.compile(r'_(\d{8})_(\d{6})')
+    #         datetime_raw = datetime_re.search(filename)
+    #         date = '-'.join([datetime_raw.group(1)[:4], datetime_raw.group(1)[4:6], datetime_raw.group(1)[6:]])
+    #         time = ':'.join([datetime_raw.group(2)[:2], datetime_raw.group(2)[2:4], datetime_raw.group(2)[4:]])
+    #         datetime_parsed = date +" "+ time        
+    #     except:
+    #         datetime_parsed = "NA"
+        
+    #     df['recordingDate'] = datetime_parsed
+    #     df['method'] = 'NONE'
+    #     df['taskLength'] = 180
+    #     df['speciesIndividualNumber'] = 1
+    #     df['vocalization'] = 'call'
+    #     df['abundance'] = None
+    #     df['tagLength'] = 3
+    #     df['minFreq'] = 0
+    #     df['maxFreq'] = 12000
+    #     df['speciesIndividualComment'] = None
+    #     df['internal_tag_id'] = None
 
-    wildtrax_df = pd.concat(df_list)
-    wildtrax_df = wildtrax_df[['location','recordingDate','method', 
-                            'taskLength', 'transcriber', 'species', 
-                            'speciesIndividualNumber', 'vocalization', 'abundance', 
-                            'startTime', 'tagLength', 'minFreq', 
-                            'maxFreq', 'speciesIndividualComment', 'internal_tag_id']]
+    #     df_list.append(df)
 
-    return(wildtrax_df)
+    # wildtrax_df = pd.concat(df_list)
+    # wildtrax_df = wildtrax_df[['location','recordingDate','method', 
+    #                         'taskLength', 'transcriber', 'species', 
+    #                         'speciesIndividualNumber', 'vocalization', 'abundance', 
+    #                         'startTime', 'tagLength', 'minFreq', 
+    #                         'maxFreq', 'speciesIndividualComment', 'internal_tag_id']]
+
+    # return(wildtrax_df)
 
 
 

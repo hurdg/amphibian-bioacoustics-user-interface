@@ -1,7 +1,9 @@
 import plotly.graph_objects as go
 
 
-def plotly_grid(file_dict, spp_code, spp_name, ai_range, samp_key):
+def plotly_grid(file_dict, spp_code, spp_name, ai_range_dict, samp_key):
+
+    ai_range = ai_range_dict[spp_code]
     
     fig = go.Figure()
 
@@ -203,5 +205,4 @@ def plotly_grid(file_dict, spp_code, spp_name, ai_range, samp_key):
         showticklabels=False, 
         tickvals = [x-0.5 for x in range(0,13)]
     )
-
     return(fig)

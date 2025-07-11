@@ -1,7 +1,7 @@
 import streamlit as st
 
-def ai_slider():
-    ai_slider = st.slider(label = "slider",
+def weto_ai_slider(value):
+    weto_ai_slider = st.slider(label = "slider",
                         help = """
                         Set the confidence range for the A.I. Classifier\n\nThe 
                         default confidence range is from 60 to 100.\n\n \n\nSamples will be classified as _absent_ by the A.I. if 
@@ -11,11 +11,28 @@ def ai_slider():
                         """, 
                         min_value = 0,
                         max_value = 100,
-                        key = 'ai_range',
-                        value =  (60, 99),
+                        key = f'weto_ai_range',
+                        value =  value,
                         label_visibility = 'collapsed')
 
-    return(ai_slider)
+    return(weto_ai_slider)
+
+def wofr_ai_slider(value):
+    wofr_ai_slider = st.slider(label = "slider",
+                        help = """
+                        Set the confidence range for the A.I. Classifier\n\nThe 
+                        default confidence range is from 60 to 100.\n\n \n\nSamples will be classified as _absent_ by the A.I. if 
+                        their probability score is below the lower bound of the confidence range. If the score is greater than the upper bound of the confidence range, 
+                        samples will be 
+                        classified as _present_. \n\n \n\n**Samples with scores that are between the upper and lower confidence bounds will not be classified by the A.I.**
+                        """, 
+                        min_value = 0,
+                        max_value = 100,
+                        key = f'wofr_ai_range',
+                        value =  value,
+                        label_visibility = 'collapsed')
+
+    return(wofr_ai_slider)
 
 def text_input():
     text_input = st.text_input(label = "user_name",
