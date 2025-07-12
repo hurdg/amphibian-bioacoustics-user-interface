@@ -7,10 +7,10 @@ import os, re, json
 
 # Custom functions
 from utils import (
-    get_filenames, get_sidebar_table, get_spectrogram, get_scores,
+    get_filenames, get_scores, get_ai_classification, get_sidebar_table, 
+    no_update_json, yes_update_json, get_sorted_keys, 
     reset_file_classifications, make_occupancy_df, make_wildtrax_df,
-    get_ai_classification, get_file_attr, get_sorted_keys, get_event_index,
-    get_title_markdown, no_update_json, yes_update_json
+    get_file_attr, get_spectrogram, get_event_index, get_title_markdown
 )
 from sidebar_functions import (
     weto_ai_slider, wofr_ai_slider, text_input, toggle_button, text_input_name

@@ -1,112 +1,100 @@
-import streamlit as st
-import opensoundscape
-import pandas as pd
-import os
-from opensoundscape.ml.cnn import load_model
+# === Imports ===
+
+import streamlit as st  # Streamlit for interactive UI
+import opensoundscape  # Bioacoustic processing library
+import pandas as pd  # Data handling
+import os  # Filesystem interaction
+import glob  # File matching
+import re  # Regular expressions
+import pickle  # For loading config files
+import tqdm  # Progress bar for loops
+import sqlite3  # SQLite database for storing predictions
+
 from opensoundscape import Audio, Spectrogram
 from opensoundscape.preprocess.preprocessors import SpectrogramPreprocessor
 from opensoundscape.ml.datasets import AudioSplittingDataset
 from opensoundscape.ml.utils import collate_audio_samples_to_tensors
+
+import torch  # PyTorch for deep learning
 import torch.nn as nn
-from torchvision import models
-import tqdm
+from torchvision import models  # Pretrained ResNet models
 
-import pickle
-import glob
-import re
 
-import torch
-import sqlite3
 
+# === Get all .wav filenames in a folder ===
 def get_filenames(user_input):
     audio_filepaths = glob.glob(os.path.join(user_input, '*.wav'))
     filename_toreview = [os.path.basename(filepath) for filepath in audio_filepaths]
-    return(filename_toreview)
+    return filename_toreview
 
-#Check to see if scores.json is present within folder
-#Presence indicates  that classifier model has already been run on folder files
+
+# === Run classifier if scores not already saved ===
 def get_scores(user_input, audio_filenames):
     if os.path.isfile(os.path.join(user_input, 'amphib_db.db')):
+        # Scores already exist, skip
         pass
-
     else:
-        #If scores.json does not exist (i.e. audio files have not been automatically classified) then load and run the classifier
-        ###################################
-
-        #Initalize audio preprocessor for spectrogram conversion
+        # === Set up spectrogram preprocessor ===
         preprocessor = SpectrogramPreprocessor(sample_duration=3, height=224, width=224)
-
-        #Spectrogram properties
         preprocessor.pipeline.to_spec.params.window_type = 'hann' 
         preprocessor.pipeline.to_spec.params.window_samples = 256
         preprocessor.pipeline.to_spec.params.overlap_fraction = 0.5
         preprocessor.pipeline.bandpass.bypass= True
         preprocessor.pipeline.load_audio.params.sample_rate = 16000
 
-        #Initiate resnet models
+        # === Load models ===
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         wofr_model = ConfigureResnet(architecture = 'resnet34', dropout = False,  dropout_rate=0.5)
         wofr_model.to(device)
-        print('using wofr_state_dict')
         wofr_model.load_state_dict(torch.load('wofr_state_dict.pth', map_location=device ))
-
         weto_model = ConfigureResnet(architecture = 'resnet34', dropout = False,  dropout_rate=0.5)
         weto_model.to(device)
-        print('using weto_state_dict')
         weto_model.load_state_dict(torch.load('weto_state_dict.pth', map_location=device ))
 
-        #Create object to store audio filepaths
+        # === Create DataLoader ===
         filepaths = [os.path.join(user_input, filename) for filename in audio_filenames]
-        filepath_presence_dict = {"filepath":filepaths}
-        sample_df = pd.DataFrame(filepath_presence_dict).set_index('filepath')
-
-        #Create dataloader - remove any augmentations
+        sample_df = pd.DataFrame({"filepath":filepaths}).set_index('filepath')
         dataset = AudioSplittingDataset(sample_df, preprocessor)
-        dataset.bypass_augmentations = True # Remove augmentations
+        dataset.bypass_augmentations = True 
+
         pred_dataloader = torch.utils.data.DataLoader(dataset=dataset,
                                             batch_size=60, 
                                             shuffle=False,
                                             collate_fn = collate_audio_samples_to_tensors)  
 
-        #Run audio files through recognizers to obtain prediction scores
+        # === Run models on audio ===
         df_list = []
         weto_model.eval()
         wofr_model.eval()
         with torch.no_grad():
             for i, (batch, _) in enumerate(tqdm.tqdm(pred_dataloader)):
                 batch = batch.to(device)
-
-                #Weto 
+                
                 weto_output = torch.sigmoid(weto_model(batch))
                 weto_nested_list = weto_output.tolist()
                 weto_pos = [inner_item for outer_item in weto_nested_list for inner_item in outer_item]
-                #weto_neg = [1-value for value in weto_pos]
-
-                #Wofr
+                
                 wofr_output = torch.sigmoid(wofr_model(batch))
                 wofr_nested_list = wofr_output.tolist()
                 wofr_pos = [inner_item for outer_item in wofr_nested_list for inner_item in outer_item]
-                #wofr_neg = [1-value for value in wofr_pos]
 
                 #Append results
                 df = pred_dataloader.dataset.label_df.reset_index().iloc[60*i:60*(i+1)]
                 df['weto_pos'] = weto_pos
-                #df['weto_neg'] = weto_neg
                 df['wofr_pos'] = wofr_pos
-                #df['wofr_neg'] = wofr_neg
                 df_list.append(df)
 
         scores = pd.concat(df_list)  
-
-        #Write json of scores for future use
-        #writes to same folder where audio files are stored
         scores[['transcriber_weto','transcriber_wofr', 'weto', 'wofr']] = None
         scores['filename'] = scores['file'].apply(lambda x: os.path.basename(x))
+
+        # === Save to SQLite database ===
         try:
             print("Opening SQLite connection to create database")
             sqlite_connection = sqlite3.connect(os.path.join(user_input, 'amphib_db.db'))
             cursor = sqlite_connection.cursor()
 
+            # Save one table per audio file
             for filename_i in audio_filenames:
                 df_i = scores.loc[scores['filename'] == filename_i]
                 df_i.to_sql(filename_i, sqlite_connection, if_exists='replace', dtype={'file': 'TEXT', 
@@ -121,6 +109,7 @@ def get_scores(user_input, audio_filenames):
             sqlite_connection.commit()
             print("Database created")
 
+            # Create summary table
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS summary_table (
                     filename TEXT PRIMARY KEY,
@@ -136,28 +125,23 @@ def get_scores(user_input, audio_filenames):
 
             sqlite_connection.close()
 
-
-        # Handle errors
         except sqlite3.Error as error:
             print('Error occurred - ', error)
 
-        # Close DB Connection irrespective of success
-        # or failure
         finally:
-        
             if sqlite_connection:
                 sqlite_connection.close()
                 print('SQLite Connection closed')
 
     return()
 
+
+# === Custom aggregation class used in SQL to select best annotation ===
 class CompareAggregate:
     def __init__(self):
-        self.priority = 0   # Start with False, will set to True if condition is met
-    # This function will be called for each row
+        self.priority = 0 
 
     def step(self, spp, transcriber):
-        # Example: Define column comparison conditions dynamically
         comparisons = [
             lambda spp, transcriber: 5 if spp == str(1) and (transcriber != 'eim_ai' and transcriber is not None) else 0, 
             lambda spp, transcriber: 4    if spp == str(1) and (transcriber == 'eim_ai' or transcriber is None) else 0,
@@ -166,18 +150,17 @@ class CompareAggregate:
             lambda spp, transcriber: 1    if spp != str(1) and (transcriber == 'eim_ai' or transcriber is None) else 0,
         ]
         for comparison in comparisons:
-            priority_tmp = comparison(spp, transcriber)  # Apply condition on column values
+            priority_tmp = comparison(spp, transcriber)
 
             if priority_tmp > self.priority:
                 self.priority = priority_tmp
                 break
-            
-        
-    # This function will be called once all rows are processed
+
     def finalize(self):
         return (self.priority)
 
 
+# === Auto-classify predictions based on AI score thresholds ===
 def get_ai_classification(audio_filenames, ai_range_dict, spp_code, user_input, user_name):
     
     try:
@@ -191,8 +174,8 @@ def get_ai_classification(audio_filenames, ai_range_dict, spp_code, user_input, 
             for spp_code in ['weto', 'wofr']:
                 lower = ai_range_dict[spp_code][0]/100
                 upper = ai_range_dict[spp_code][1]/100
-                #Record samples that are classified by AI - manual classification has priority
-                #Set samples with scores above upper threshold
+
+                # Classify confident positives
                 cursor.execute(f"""
                             UPDATE '{filename_i}' SET 
                             {'transcriber_'+spp_code} ='eim_ai',
@@ -200,7 +183,8 @@ def get_ai_classification(audio_filenames, ai_range_dict, spp_code, user_input, 
                                 WHERE    ({spp_code + '_pos'} > {upper})  AND 
                                         ({'transcriber_'+spp_code} = 'eim_ai' OR {'transcriber_'+spp_code} IS NULL)
                             """)
-                #Set samples with scores below lower threshold
+                
+                # Classify confident negatives
                 cursor.execute(f"""
                             UPDATE '{filename_i}' SET 
                             {'transcriber_'+spp_code} ='eim_ai',
@@ -209,7 +193,7 @@ def get_ai_classification(audio_filenames, ai_range_dict, spp_code, user_input, 
                                         ({'transcriber_'+spp_code} = 'eim_ai' OR {'transcriber_'+spp_code} IS NULL)
                             """)
 
-                #Overwrite samples that are not classified by AI, while respecting those that have been manually classified
+                # Unclassify uncertain scores
                 cursor.execute(f"""
                                 UPDATE '{filename_i}' SET 
                                 {'transcriber_'+spp_code} =NULL, 
@@ -217,7 +201,8 @@ def get_ai_classification(audio_filenames, ai_range_dict, spp_code, user_input, 
                                     WHERE   ({spp_code + '_pos'} >= {lower} AND {spp_code + '_pos'} <= {upper})  AND 
                                             ({'transcriber_'+spp_code} = 'eim_ai' OR {'transcriber_'+spp_code} IS NULL)
                                     """)
-
+                
+                # Write summary row using priority logic
                 cursor.execute(f"""
     WITH    priority_weto AS (SELECT filename, compare_columns_aggregate(weto, transcriber_weto) as num
                                 FROM '{filename_i}'),
@@ -258,112 +243,33 @@ def get_ai_classification(audio_filenames, ai_range_dict, spp_code, user_input, 
         sqlite_connection.commit()  # Commit only if all statements succeed
         sqlite_connection.close()
 
-    # Handle errors
     except sqlite3.Error as error:
         print('Error occurred - ', error)
         sqlite_connection.rollback()  # Undo all changes if an error occurs
 
-    # Close DB Connection irrespective of success
-    # or failure
     finally:
-    
         if sqlite_connection:
             sqlite_connection.close()
             print('SQLite Connection closed')
-
     return()
 
+# === Load predictions from SQLite into sidebar table ===
 def get_sidebar_table(audio_filenames, spp_code, key, user_input, selection, user_name, auto_filer):
-# Define the custom aggregate class
-    # class CompareAggregate:
-    #     def __init__(self):
-    #         self.priority = 0   # Start with False, will set to True if condition is met
-    #     # This function will be called for each row
 
-    #     def step(self, spp, transcriber):
-    #         # Example: Define column comparison conditions dynamically
-    #         comparisons = [
-    #             lambda spp, transcriber: 5 if spp == str(1) and (transcriber != 'eim_ai' and transcriber is not None) else 0, 
-    #             lambda spp, transcriber: 4    if spp == str(1) and (transcriber == 'eim_ai' or transcriber is None) else 0,
-    #             lambda spp, transcriber: 3    if spp == None else 0,
-    #             lambda spp, transcriber: 2 if spp != str(1) and (transcriber != 'eim_ai' and transcriber is not None) else 0,
-    #             lambda spp, transcriber: 1    if spp != str(1) and (transcriber == 'eim_ai' or transcriber is None) else 0,
-    #         ]
-    #         for comparison in comparisons:
-    #             priority_tmp = comparison(spp, transcriber)  # Apply condition on column values
-
-    #             if priority_tmp > self.priority:
-    #                 self.priority = priority_tmp
-    #                 break
-                
-            
-    #     # This function will be called once all rows are processed
-    #     def finalize(self):
-    #         return (self.priority)
     try:
+        # Connect to SQLite and load file-level predictions
         print("Opening SQLite connection to extract and update summary table")
         sqlite_connection = sqlite3.connect(os.path.join(user_input, 'amphib_db.db'))
-    #     sqlite_connection.create_aggregate("compare_columns_aggregate", 2, CompareAggregate)  # Accepts 2 column values
-
-    #     cursor = sqlite_connection.cursor()
-    #     for filename_i in audio_filenames:
-    #         cursor.execute(f"""
-                        
-    # -- create and insert a summary row of each table in the database        
-
-       
-    # WITH    priority_weto AS (SELECT filename, compare_columns_aggregate(weto, transcriber_weto) as num
-    #                             FROM '{filename_i}'),
-    #         priority_wofr AS (SELECT filename, compare_columns_aggregate(wofr, transcriber_wofr) as num
-    #                         FROM '{filename_i}')
-
-    # INSERT OR REPLACE INTO summary_table (filename, transcriber_weto, transcriber_wofr, weto, wofr) 
-
-    # SELECT 
-    #     priority_weto.filename,
-    #     CASE
-    #         WHEN priority_weto.num = 5 THEN '{user_name}'
-    #         WHEN priority_weto.num = 4 THEN 'eim_ai'
-    #         WHEN priority_weto.num = 3 THEN NULL
-    #         WHEN priority_weto.num = 2 THEN '{user_name}'
-    #         WHEN priority_weto.num = 1 THEN 'eim_ai'
-    #     END AS transcriber_weto,
-    #     CASE
-    #         WHEN priority_wofr.num = 5 THEN '{user_name}'
-    #         WHEN priority_wofr.num = 4 THEN 'eim_ai'
-    #         WHEN priority_wofr.num = 3 THEN NULL
-    #         WHEN priority_wofr.num = 2 THEN '{user_name}'
-    #         WHEN priority_wofr.num = 1 THEN 'eim_ai'
-    #     END AS transcriber_wofr,
-    #     CASE
-    #         WHEN priority_weto.num > 3 THEN 1
-    #         WHEN priority_weto.num = 3 THEN NULL
-    #         WHEN priority_weto.num < 3 THEN 0
-    #     END AS weto,
-    #     CASE
-    #         WHEN priority_wofr.num > 3 THEN 1
-    #         WHEN priority_wofr.num = 3 THEN NULL
-    #         WHEN priority_wofr.num < 3 THEN 0
-    #     END AS wofr
-    # FROM priority_weto LEFT JOIN priority_wofr
-
-    # ;""")
-        
-    #     sqlite_connection.commit()  # Commit only if all statements succeed
         df = pd.read_sql("SELECT * FROM summary_table", sqlite_connection)
         if auto_filer:
             df.sort_values(by=f'{spp_code}', inplace = True, ascending = False, na_position='first')
         sqlite_connection.close()
 
-    # Handle errors
     except sqlite3.Error as error:
         print('Error occurred - ', error)
         sqlite_connection.rollback()  # Undo all changes if an error occurs
 
-    # Close DB Connection irrespective of success
-    # or failure
     finally:
-
         if sqlite_connection:
             sqlite_connection.close()
             print('SQLite Connection closed')
@@ -415,7 +321,7 @@ def get_sidebar_table(audio_filenames, spp_code, key, user_input, selection, use
 
     return(df, sidebar_df)
 
-
+# === Update SQLite with negative manual annotations from user ===
 def no_update_json(filename, spp_code, user_name, yesno_key, user_input):
 
     try:
@@ -431,23 +337,18 @@ def no_update_json(filename, spp_code, user_name, yesno_key, user_input):
 
         sqlite_connection.commit()
         print("Manual selection updated")
-
         sqlite_connection.close()
 
-
-    # Handle errors
     except sqlite3.Error as error:
         print('Error occurred - ', error)
 
-    # Close DB Connection irrespective of success
-    # or failure
     finally:
-
         if sqlite_connection:
             sqlite_connection.close()
             print('SQLite Connection closed')
         st.session_state.no_button = False
 
+# === Update SQLite with positive manual annotations from user ===
 def yes_update_json(filename, spp_code, user_name, yesno_key, user_input):
 
     try:
@@ -466,15 +367,10 @@ def yes_update_json(filename, spp_code, user_name, yesno_key, user_input):
 
         sqlite_connection.close()
 
-
-    # Handle errors
     except sqlite3.Error as error:
         print('Error occurred - ', error)
 
-    # Close DB Connection irrespective of success
-    # or failure
     finally:
-
         if sqlite_connection:
             sqlite_connection.close()
             print('SQLite Connection closed')
@@ -505,14 +401,10 @@ def get_sorted_keys(filename, spp_code, user_input):
 
         sqlite_connection.close()
 
-    # Handle errors
     except sqlite3.Error as error:
         print('Error occurred - ', error)
 
-    # Close DB Connection irrespective of success
-    # or failure
     finally:
-
         if sqlite_connection:
             sqlite_connection.close()
             print('SQLite Connection closed')
@@ -534,62 +426,16 @@ def reset_file_classifications(spp_code, filename, user_input):
         sqlite_connection.commit()
         sqlite_connection.close()
 
-    # Handle errors
     except sqlite3.Error as error:
         print('Error occurred - ', error)
 
-    # Close DB Connection irrespective of success
-    # or failure
     finally:
-
         if sqlite_connection:
             sqlite_connection.close()
             print('SQLite Connection closed')
 
 
-##### Weto Model Architecture #######
 
-class ConfigureResnet(nn.Module):
-    def __init__(self, architecture, dropout:bool, dropout_rate=0.5):
-        super(ConfigureResnet, self).__init__()
-        # Load a pretrained ResNet model
-        self.resnet = getattr(models, architecture)(weights=None)
-        
-        num_features = self.resnet.fc.in_features
-        self.resnet.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
-
-        if dropout:
-        # Replace the fully connected layer with a new one that includes dropout
-            self.resnet.fc = nn.Sequential(
-                nn.Dropout(p=dropout_rate),
-                nn.Linear(num_features, out_features =1)
-            )
-        else:
-            self.resnet.fc = nn.Linear(num_features, out_features =1) 
-
-    def forward(self, x):
-        return self.resnet(x)
-
-
-##### Functions #######
-#Load the classifier model (cache (?))
-@st.cache_data
-def loading_model():
-    weto_model_path = os.path.join(os.getcwd(), 'weto978.model')
-    #weto_model_path = os.path.join(os.getcwd(), 'final.model')
-    print("Using 'final.model'!!")
-    wofr_model_path = os.path.join(os.getcwd(), 'wofr997.model')
-    
-    weto_model = opensoundscape.ml.cnn.load_model(weto_model_path)
-    wofr_model = opensoundscape.ml.cnn.load_model(wofr_model_path)
-    return weto_model, wofr_model
-
-
-def get_predictions(_model, user_input, filename_toreview):
-    filepaths = [os.path.join(user_input, filename) for filename in filename_toreview]
-    output = _model.predict(filepaths, activation_layer = 'sigmoid', batch_size  = 60, num_workers = 0)
-    output.reset_index(inplace=True)
-    return output
 
 
 def get_file_attr(df, user_input, selection):
@@ -597,12 +443,8 @@ def get_file_attr(df, user_input, selection):
     filepath = os.path.join(user_input, filename)
     return(filename, filepath)
 
-##### Functions #######
-def get_df(audio_filenames, spp_code):
-    df = pd.DataFrame(columns = ['filename', 'transcriber_'+spp_code, spp_code+'_start_time',  spp_code])
-    df['filename'] = audio_filenames
-    return(df)
 
+# === Generate occupancy CSV from summary_table ===
 def make_occupancy_df(audio_filenames, user_input):
     try:
         print('Opening SQLite connection to create occupancy dataframe')
@@ -642,6 +484,8 @@ def make_occupancy_df(audio_filenames, user_input):
             print('SQLite Connection closed')
         st.session_state.no_button = False
 
+
+# === Export WildTrax-format CSV from summary_table ===
 def make_wildtrax_df(audio_filenames, user_input):
 
     try:
@@ -703,65 +547,9 @@ def make_wildtrax_df(audio_filenames, user_input):
             print('SQLite Connection closed')
         st.session_state.no_button = False            
 
-    # for filename in output.keys():
-    #     df_raw = pd.DataFrame(output[filename])
-    #     df_weto = df_raw[['transcriber_weto', 'start_time']][(df_raw['weto']==1)].rename(columns = {'start_time': 'startTime'})
-    #     df_weto['species'] = 'WETO'
-    #     df_wofr = df_raw[['transcriber_wofr', 'start_time']][(df_raw['wofr']==1)].rename(columns = {'start_time': 'startTime'})
-    #     df_wofr['species'] = 'WOFR'
-    #     df = pd.concat([df_weto.rename(columns={'transcriber_weto':'transcriber'}), df_wofr.rename(columns={'transcriber_wofr':'transcriber'})])
-    #     try:
-    #         #filename_location_re = re.compile(r'[Aa]-\d+?(?=_)')
-    #         filename_location_re = re.compile(r'^(.*)_\d{8}_\d{6}')
-    #         location = filename_location_re.match(filename).group(1)
-    #     except:
-    #         try:
-    #             filepath_location_re = re.compile(r'[Aa]-\d+')
-    #             location = filepath_location_re.match(filename)
-    #         except: location = "NA"
-        
-    #     df['location'] = location
-
-    #     try:
-    #         datetime_re = re.compile(r'_(\d{8})_(\d{6})')
-    #         datetime_raw = datetime_re.search(filename)
-    #         date = '-'.join([datetime_raw.group(1)[:4], datetime_raw.group(1)[4:6], datetime_raw.group(1)[6:]])
-    #         time = ':'.join([datetime_raw.group(2)[:2], datetime_raw.group(2)[2:4], datetime_raw.group(2)[4:]])
-    #         datetime_parsed = date +" "+ time        
-    #     except:
-    #         datetime_parsed = "NA"
-        
-    #     df['recordingDate'] = datetime_parsed
-    #     df['method'] = 'NONE'
-    #     df['taskLength'] = 180
-    #     df['speciesIndividualNumber'] = 1
-    #     df['vocalization'] = 'call'
-    #     df['abundance'] = None
-    #     df['tagLength'] = 3
-    #     df['minFreq'] = 0
-    #     df['maxFreq'] = 12000
-    #     df['speciesIndividualComment'] = None
-    #     df['internal_tag_id'] = None
-
-    #     df_list.append(df)
-
-    # wildtrax_df = pd.concat(df_list)
-    # wildtrax_df = wildtrax_df[['location','recordingDate','method', 
-    #                         'taskLength', 'transcriber', 'species', 
-    #                         'speciesIndividualNumber', 'vocalization', 'abundance', 
-    #                         'startTime', 'tagLength', 'minFreq', 
-    #                         'maxFreq', 'speciesIndividualComment', 'internal_tag_id']]
-
-    # return(wildtrax_df)
 
 
-
-
-
-
-
-#create spectrogram image from audio data
-#use same spectrogram creation parameters that were used in the classification model
+# === Create spectrogram image from audio data ===
 def get_spectrogram(filepath, start_time, end_time):
     with open('model_config.pkl', 'rb') as inp:
         spec_params = pickle.load(inp)
@@ -786,26 +574,7 @@ def get_spectrogram(filepath, start_time, end_time):
 
 
 
-def get_classificationDF(user_input, audio_filenames, spp_code):
-    #Check to see if classified.csv is present within folder
-    #Presence indeciates that classification has already been initated on the audio files (may be completed)
-    classified_filepath = os.path.join(user_input, 'ai_tags.csv')
-
-    if os.path.exists(classified_filepath):
-        df = pd.read_csv(classified_filepath, index_col = False)
-        if spp_code not in df.columns:
-            df[spp_code] = pd.Series(dtype='int')
-            df[spp_code+'_start_time'] = pd.Series(dtype='int')
-
-    else:
-        #Create csv with wildtrax tag formatting
-        #To be used to store classification decisions
-        #writes to same folder where audio files are stored
-        df = get_df(audio_filenames, spp_code)
-        df.to_csv(classified_filepath, index = False)
-    return(df, classified_filepath)
-
-
+# === Obtain key from sample navigator corresponding to selected cell ===
 def get_event_index(grid_event):
     x_event = grid_event.selection['points'][0]['x']
     y_event = grid_event.selection['points'][0]['y']
@@ -813,6 +582,7 @@ def get_event_index(grid_event):
     samp_key = str(event_index)
     return(samp_key)
 
+# === Markdown css styling for title
 def get_title_markdown(filename):
     st.markdown("""
     <style>
@@ -824,3 +594,24 @@ def get_title_markdown(filename):
     
     st.markdown(f'<p class="big-font">Filename:  {filename}</p>', unsafe_allow_html=True)
 
+# === Initiitate model architecture, to be populated with weights from state_dicts ===
+class ConfigureResnet(nn.Module):
+    def __init__(self, architecture, dropout:bool, dropout_rate=0.5):
+        super(ConfigureResnet, self).__init__()
+        # Load a pretrained ResNet model
+        self.resnet = getattr(models, architecture)(weights=None)
+        
+        num_features = self.resnet.fc.in_features
+        self.resnet.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
+
+        if dropout:
+        # Replace the fully connected layer with a new one that includes dropout
+            self.resnet.fc = nn.Sequential(
+                nn.Dropout(p=dropout_rate),
+                nn.Linear(num_features, out_features =1)
+            )
+        else:
+            self.resnet.fc = nn.Linear(num_features, out_features =1) 
+
+    def forward(self, x):
+        return self.resnet(x)
