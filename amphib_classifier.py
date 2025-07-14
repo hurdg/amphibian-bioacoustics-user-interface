@@ -84,9 +84,8 @@ elif not user_name:
 ################################################################################
 
 audio_filenames = get_filenames(user_input)
-get_scores(user_input, audio_filenames)
+get_scores(user_input, audio_filenames, ai_range_dict)
 get_ai_classification(audio_filenames, ai_range_dict, spp_code, user_input, user_name)
-
 
 ################################################################################
 #                            4. FILE SELECTION LOGIC                           #
@@ -240,7 +239,7 @@ with st.sidebar:
 
     def reset_button():
         st.session_state.reset_table = False
-        reset_file_classifications(spp_code, filename, user_input)
+        reset_file_classifications(spp_code, filename, user_input, user_name)
 
     left, mid, right = st.columns([1, 1, 1])
 

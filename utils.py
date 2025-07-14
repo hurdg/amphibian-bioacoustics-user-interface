@@ -29,7 +29,7 @@ def get_filenames(user_input):
 
 
 # === Run classifier if scores not already saved ===
-def get_scores(user_input, audio_filenames):
+def get_scores(user_input, audio_filenames, ai_range_dict):
     if os.path.isfile(os.path.join(user_input, 'amphib_db.db')):
         # Scores already exist, skip
         pass
@@ -120,8 +120,19 @@ def get_scores(user_input, audio_filenames):
                 );
                 """)
             
+            # Create ai range table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS ai_range (
+                    id INTEGER PRIMARY KEY,
+                    weto INTEGER,
+                    wofr INTEGER
+                );
+                """)
+            cursor.execute(f"INSERT OR IGNORE INTO ai_range (id, weto, wofr) VALUES (1, 101, 102)")
+            cursor.execute(f"INSERT OR IGNORE INTO ai_range (id, weto, wofr) VALUES (2, 101, 102)")
+
             sqlite_connection.commit()
-            print("Summary table created")
+            print("AI range table created")
 
             sqlite_connection.close()
 
@@ -167,47 +178,128 @@ def get_ai_classification(audio_filenames, ai_range_dict, spp_code, user_input, 
         print("Opening SQLite connection to automatically classify recordings")
         sqlite_connection = sqlite3.connect(os.path.join(user_input, 'amphib_db.db'))
         cursor = sqlite_connection.cursor()
+        print("Checking if recordings have already been classified...")
+        cursor.execute(f"""
+            SELECT {spp_code} FROM ai_range WHERE id IN (1, 2) ORDER BY id;
+            """)
+        results = [row[0] for row in cursor.fetchall()]
+        if (results[0]==ai_range_dict[spp_code][0]) & (results[1]==ai_range_dict[spp_code][1]):
+            print("Files have already been classified.")
+
+        else:
+            print('Recordings need to be classified. Updating ai range table and preparing to classify files...')
+            # Update weto for id = 1
+            cursor.execute(f"UPDATE ai_range SET {spp_code} = {ai_range_dict[spp_code][0]} WHERE id = 1")
+
+            # Update weto for id = 2
+            cursor.execute(f"UPDATE ai_range SET {spp_code} = {ai_range_dict[spp_code][1]} WHERE id = 2")
+
+            # Commit the changes
+            sqlite_connection.commit()
+            sqlite_connection.create_aggregate("compare_columns_aggregate", 2, CompareAggregate)  # Accepts 2 column values
+
+            # WHERE CLAUSE TO UPDATE DATA
+            for filename_i in audio_filenames:
+                for spp_code in ['weto', 'wofr']:
+                    lower = ai_range_dict[spp_code][0]/100
+                    upper = ai_range_dict[spp_code][1]/100
+
+                    # Classify confident positives
+                    cursor.execute(f"""
+                                UPDATE '{filename_i}' SET 
+                                {'transcriber_'+spp_code} ='eim_ai',
+                                {spp_code} = 1
+                                    WHERE    ({spp_code + '_pos'} > {upper})  AND 
+                                            ({'transcriber_'+spp_code} = 'eim_ai' OR {'transcriber_'+spp_code} IS NULL)
+                                """)
+                    
+                    # Classify confident negatives
+                    cursor.execute(f"""
+                                UPDATE '{filename_i}' SET 
+                                {'transcriber_'+spp_code} ='eim_ai',
+                                {spp_code} = 0
+                                    WHERE    ({spp_code + '_pos'} < {lower})  AND 
+                                            ({'transcriber_'+spp_code} = 'eim_ai' OR {'transcriber_'+spp_code} IS NULL)
+                                """)
+
+                    # Unclassify uncertain scores
+                    cursor.execute(f"""
+                                    UPDATE '{filename_i}' SET 
+                                    {'transcriber_'+spp_code} =NULL, 
+                                    {spp_code} = NULL
+                                        WHERE   ({spp_code + '_pos'} >= {lower} AND {spp_code + '_pos'} <= {upper})  AND 
+                                                ({'transcriber_'+spp_code} = 'eim_ai' OR {'transcriber_'+spp_code} IS NULL)
+                                        """)
+                    
+                    # Write summary row using priority logic
+                    cursor.execute(f"""
+        WITH    priority_weto AS (SELECT filename, compare_columns_aggregate(weto, transcriber_weto) as num
+                                    FROM '{filename_i}'),
+                priority_wofr AS (SELECT filename, compare_columns_aggregate(wofr, transcriber_wofr) as num
+                                FROM '{filename_i}')
+
+        INSERT OR REPLACE INTO summary_table (filename, transcriber_weto, transcriber_wofr, weto, wofr) 
+
+        SELECT 
+            priority_weto.filename,
+            CASE
+                WHEN priority_weto.num = 5 THEN '{user_name}'
+                WHEN priority_weto.num = 4 THEN 'eim_ai'
+                WHEN priority_weto.num = 3 THEN NULL
+                WHEN priority_weto.num = 2 THEN '{user_name}'
+                WHEN priority_weto.num = 1 THEN 'eim_ai'
+            END AS transcriber_weto,
+            CASE
+                WHEN priority_wofr.num = 5 THEN '{user_name}'
+                WHEN priority_wofr.num = 4 THEN 'eim_ai'
+                WHEN priority_wofr.num = 3 THEN NULL
+                WHEN priority_wofr.num = 2 THEN '{user_name}'
+                WHEN priority_wofr.num = 1 THEN 'eim_ai'
+            END AS transcriber_wofr,
+            CASE
+                WHEN priority_weto.num > 3 THEN 1
+                WHEN priority_weto.num = 3 THEN NULL
+                WHEN priority_weto.num < 3 THEN 0
+            END AS weto,
+            CASE
+                WHEN priority_wofr.num > 3 THEN 1
+                WHEN priority_wofr.num = 3 THEN NULL
+                WHEN priority_wofr.num < 3 THEN 0
+            END AS wofr
+        FROM priority_weto LEFT JOIN priority_wofr
+                                        """)
+
+            sqlite_connection.commit()  # Commit only if all statements succeed
+            sqlite_connection.close()
+
+    except sqlite3.Error as error:
+        print('Error occurred - ', error)
+        sqlite_connection.rollback()  # Undo all changes if an error occurs
+
+    finally:
+        if sqlite_connection:
+            sqlite_connection.close()
+            print('SQLite Connection closed')
+    return()
+
+
+
+# === Update summary table, needed if manual classifications have been made ===
+def update_summary_table(filename, user_input, user_name):
+    
+    try:
+        print("Opening SWLite connection to update summary table.")
+        sqlite_connection = sqlite3.connect(os.path.join(user_input, 'amphib_db.db'))
+        cursor = sqlite_connection.cursor()
+
         sqlite_connection.create_aggregate("compare_columns_aggregate", 2, CompareAggregate)  # Accepts 2 column values
 
-        # WHERE CLAUSE TO UPDATE DATA
-        for filename_i in audio_filenames:
-            for spp_code in ['weto', 'wofr']:
-                lower = ai_range_dict[spp_code][0]/100
-                upper = ai_range_dict[spp_code][1]/100
-
-                # Classify confident positives
-                cursor.execute(f"""
-                            UPDATE '{filename_i}' SET 
-                            {'transcriber_'+spp_code} ='eim_ai',
-                            {spp_code} = 1
-                                WHERE    ({spp_code + '_pos'} > {upper})  AND 
-                                        ({'transcriber_'+spp_code} = 'eim_ai' OR {'transcriber_'+spp_code} IS NULL)
-                            """)
-                
-                # Classify confident negatives
-                cursor.execute(f"""
-                            UPDATE '{filename_i}' SET 
-                            {'transcriber_'+spp_code} ='eim_ai',
-                            {spp_code} = 0
-                                WHERE    ({spp_code + '_pos'} < {lower})  AND 
-                                        ({'transcriber_'+spp_code} = 'eim_ai' OR {'transcriber_'+spp_code} IS NULL)
-                            """)
-
-                # Unclassify uncertain scores
-                cursor.execute(f"""
-                                UPDATE '{filename_i}' SET 
-                                {'transcriber_'+spp_code} =NULL, 
-                                {spp_code} = NULL
-                                    WHERE   ({spp_code + '_pos'} >= {lower} AND {spp_code + '_pos'} <= {upper})  AND 
-                                            ({'transcriber_'+spp_code} = 'eim_ai' OR {'transcriber_'+spp_code} IS NULL)
-                                    """)
-                
                 # Write summary row using priority logic
-                cursor.execute(f"""
+        cursor.execute(f"""
     WITH    priority_weto AS (SELECT filename, compare_columns_aggregate(weto, transcriber_weto) as num
-                                FROM '{filename_i}'),
+                                FROM '{filename}'),
             priority_wofr AS (SELECT filename, compare_columns_aggregate(wofr, transcriber_wofr) as num
-                            FROM '{filename_i}')
+                            FROM '{filename}')
 
     INSERT OR REPLACE INTO summary_table (filename, transcriber_weto, transcriber_wofr, weto, wofr) 
 
@@ -253,6 +345,7 @@ def get_ai_classification(audio_filenames, ai_range_dict, spp_code, user_input, 
             print('SQLite Connection closed')
     return()
 
+
 # === Load predictions from SQLite into sidebar table ===
 def get_sidebar_table(audio_filenames, spp_code, key, user_input, selection, user_name, auto_filer):
 
@@ -263,6 +356,8 @@ def get_sidebar_table(audio_filenames, spp_code, key, user_input, selection, use
         df = pd.read_sql("SELECT * FROM summary_table", sqlite_connection)
         if auto_filer:
             df.sort_values(by=f'{spp_code}', inplace = True, ascending = False, na_position='first')
+        else:
+            df.sort_values(by=f'filename', inplace = True, ascending = True)
         sqlite_connection.close()
 
     except sqlite3.Error as error:
@@ -347,6 +442,7 @@ def no_update_json(filename, spp_code, user_name, yesno_key, user_input):
             sqlite_connection.close()
             print('SQLite Connection closed')
         st.session_state.no_button = False
+    update_summary_table(filename, user_input, user_name)
 
 # === Update SQLite with positive manual annotations from user ===
 def yes_update_json(filename, spp_code, user_name, yesno_key, user_input):
@@ -375,7 +471,7 @@ def yes_update_json(filename, spp_code, user_name, yesno_key, user_input):
             sqlite_connection.close()
             print('SQLite Connection closed')
         st.session_state.yes_button = False
-
+    update_summary_table(filename, user_input, user_name)
 
 
 
@@ -412,7 +508,7 @@ def get_sorted_keys(filename, spp_code, user_input):
 
 
 
-def reset_file_classifications(spp_code, filename, user_input):
+def reset_file_classifications(spp_code, filename, user_input, user_name):
     print(f"Opening SQLite connection to reset {filename}")
     try:
         print(f'resetiing {filename}')
@@ -433,6 +529,8 @@ def reset_file_classifications(spp_code, filename, user_input):
         if sqlite_connection:
             sqlite_connection.close()
             print('SQLite Connection closed')
+        
+    update_summary_table(filename, user_input, user_name)
 
 
 
